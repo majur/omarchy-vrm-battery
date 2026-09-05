@@ -46,6 +46,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 STATE_FILE = STATE_DIR / "status.json"
 PID_FILE = RUNTIME_DIR / "bridge.pid"
 LOCK_FILE = RUNTIME_DIR / "bridge.lock"
+VICTRON_CA = Path(__file__).resolve().parents[1] / "certs" / "venus-ca.crt"
 
 
 def atomic_json(path: Path, data: dict[str, Any], mode: int = 0o600) -> None:
@@ -229,6 +230,11 @@ class MqttClient:
         if not self.host or not self.host.endswith(".victronenergy.com"):
             raise RuntimeError("VRM vrátil neočakávaný MQTT broker.")
         context = ssl.create_default_context()
+        if not VICTRON_CA.is_file():
+            raise RuntimeError("Chýba oficiálny Victron CA certifikát pre MQTT.")
+        # VRM MQTT uses the Victron CCGX CA. Keep the system trust store and
+        # add this upstream CA; certificate and hostname verification remain on.
+        context.load_verify_locations(cafile=str(VICTRON_CA))
         raw = socket.create_connection((self.host, self.port), timeout=15)
         self.socket = context.wrap_socket(raw, server_hostname=self.host)
         client_id = f"omarchy-vrm-{secrets.token_hex(6)}"
