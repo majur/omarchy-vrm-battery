@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "community.vrm-battery",
+  "name": "VRM Battery",
+  "version": "0.1.0",
+  "author": "Community",
+  "license": "MIT",
+  "description": "Compact live battery, solar, and home-load status from Victron VRM.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "BarWidget.qml"},
+  "barWidget": {
+    "displayName": "VRM Battery",
+    "description": "Live Victron VRM battery, solar generation, home load, and data freshness.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
