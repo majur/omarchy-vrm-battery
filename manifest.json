@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "community.vrm-battery",
   "name": "VRM Battery",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "Community",
   "license": "MIT",
   "description": "Compact live battery, solar, and home-load status from Victron VRM.",

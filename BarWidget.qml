@@ -81,6 +81,14 @@ BarWidget {
 
   function reload() { statusFile.reload() }
 
+  // PopupCard delegates outside-click dismissal back to its owner. Keeping the
+  // state here in sync lets the next click reopen the card and releases the
+  // bar's active-popout marker, which also removes its open-panel treatment.
+  function open() { popupOpen = true }
+  function close() { popupOpen = false }
+  function toggle() { popupOpen = !popupOpen }
+  function closeForPopoutSwitch() { close() }
+
   Component.onCompleted: {
     statusFile.reload()
     ensureBridge.running = true
@@ -166,7 +174,7 @@ BarWidget {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onClicked: root.popupOpen = !root.popupOpen
+    onClicked: root.toggle()
     onEntered: if (root.bar) root.bar.showTooltip(root, root.tooltip())
     onExited: if (root.bar) root.bar.hideTooltip(root)
   }
