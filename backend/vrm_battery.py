@@ -33,6 +33,7 @@ SERVICE = "omarchy-vrm-battery"
 PROFILE = "default"
 FRESH_SECONDS = 90
 KEEPALIVE_SECONDS = 30
+WIDGET_HEARTBEAT_SECONDS = 45
 
 
 def xdg(name: str, default: str) -> Path:
@@ -47,6 +48,8 @@ STATE_FILE = STATE_DIR / "status.json"
 PID_FILE = RUNTIME_DIR / "bridge.pid"
 LOCK_FILE = RUNTIME_DIR / "bridge.lock"
 REFRESH_FILE = RUNTIME_DIR / "refresh"
+HEARTBEAT_FILE = RUNTIME_DIR / "widget.heartbeat"
+DISCONNECT_FILE = RUNTIME_DIR / "disconnecting"
 VICTRON_CA = Path(__file__).resolve().parents[1] / "certs" / "venus-ca.crt"
 
 
@@ -95,13 +98,22 @@ def write_status(state: dict[str, Any]) -> None:
     atomic_json(STATE_FILE, state)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so an API token can never follow a new origin."""
+
+    def redirect_request(self, request: urllib.request.Request, fp: Any, code: int,
+                         message: str, headers: Any, new_url: str) -> None:
+        return None
+
+
 def api_get(path: str, token: str) -> dict[str, Any]:
     request = urllib.request.Request(
         API + path,
         headers={"x-authorization": f"Token {token}", "accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        opener = urllib.request.build_opener(NoRedirect())
+        with opener.open(request, timeout=15) as response:
             parsed = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
@@ -141,9 +153,15 @@ def lookup_secret() -> str:
     return completed.stdout.rstrip("\n") if completed.returncode == 0 else ""
 
 
-def clear_secret() -> None:
-    subprocess.run(["secret-tool", "clear", "service", SERVICE, "profile", PROFILE],
-                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+def clear_secret() -> bool:
+    try:
+        completed = subprocess.run(
+            ["secret-tool", "clear", "service", SERVICE, "profile", PROFILE],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return completed.returncode == 0
 
 
 def configure() -> int:
@@ -189,6 +207,7 @@ def configure() -> int:
         "mqttHost": mqtt_host, "dashboardUrl": f"https://vrm.victronenergy.com/installation/{site_id}/dashboard",
     }
     atomic_json(CONFIG_FILE, config)
+    with contextlib.suppress(FileNotFoundError): DISCONNECT_FILE.unlink()
     state = status_template("connecting")
     state.update({key: config[key] for key in ("installationName", "siteId", "dashboardUrl")})
     write_status(state)
@@ -319,6 +338,7 @@ class Measurements:
     state: dict[str, Any]
     phases: int | None = None
     phase_values: dict[int, float | None] = field(default_factory=lambda: {1: None, 2: None, 3: None})
+    phase_confirmed_at: dict[int, float | None] = field(default_factory=lambda: {1: None, 2: None, 3: None})
 
     def set_metric(self, key: str, value: Any) -> bool:
         metric = self.state[key]
@@ -348,8 +368,10 @@ class Measurements:
     def set_phase(self, number: int, value: Any) -> bool:
         try:
             self.phase_values[number] = float(value) if value is not None else None
+            self.phase_confirmed_at[number] = time.time() if value is not None else None
         except (TypeError, ValueError):
             self.phase_values[number] = None
+            self.phase_confirmed_at[number] = None
         return self.update_home()
 
     def update_home(self) -> bool:
@@ -357,8 +379,10 @@ class Measurements:
         if not self.phases or any(self.phase_values[i] is None for i in range(1, self.phases + 1)):
             home.update({"value": None, "validity": "missing", "confirmedAt": None})
             return True
+        confirmed_at = min(self.phase_confirmed_at[i] for i in range(1, self.phases + 1))
+        validity = "stale" if time.time() - confirmed_at > FRESH_SECONDS else "fresh"
         home.update({"value": sum(self.phase_values[i] or 0 for i in range(1, self.phases + 1)),
-                     "validity": "fresh", "confirmedAt": time.time()})
+                     "validity": validity, "confirmedAt": confirmed_at})
         return True
 
     def expire(self) -> bool:
@@ -432,6 +456,8 @@ def run_bridge() -> int:
     ]
     next_retry = 1.0
     while True:
+        if widget_heartbeat_expired():
+            return 0
         client: MqttClient | None = None
         try:
             write_status(state)
@@ -447,6 +473,8 @@ def run_bridge() -> int:
             last_manual_refresh = refresh_mtime()
             next_retry = 1.0
             while True:
+                if widget_heartbeat_expired():
+                    return 0
                 kind, packet = client.recv(1.0)
                 changed = False
                 if kind == 3:
@@ -489,13 +517,15 @@ def run_bridge() -> int:
             if measurements.expire():
                 pass
             write_status(state)
-            time.sleep(next_retry + secrets.randbelow(300) / 1000)
+            if not wait_for_widget(next_retry + secrets.randbelow(300) / 1000):
+                return 0
             next_retry = min(next_retry * 2, 60)
         except (OSError, ssl.SSLError) as error:
             state["connection"] = "offline"
             state["error"] = "The MQTT connection was interrupted."
             write_status(state)
-            time.sleep(next_retry + secrets.randbelow(300) / 1000)
+            if not wait_for_widget(next_retry + secrets.randbelow(300) / 1000):
+                return 0
             next_retry = min(next_retry * 2, 60)
         finally:
             if client:
@@ -510,9 +540,44 @@ def process_alive(pid: int) -> bool:
         return False
 
 
-def ensure_bridge() -> int:
+def process_is_bridge(pid: int) -> bool:
+    if not process_alive(pid):
+        return False
+    try:
+        arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    script = str(Path(__file__).resolve()).encode()
+    return script in arguments and b"run" in arguments
+
+
+def touch_widget_heartbeat() -> None:
     RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(RUNTIME_DIR, 0o700)
+    HEARTBEAT_FILE.touch(mode=0o600, exist_ok=True)
+    os.chmod(HEARTBEAT_FILE, 0o600)
+
+
+def widget_heartbeat_expired() -> bool:
+    try:
+        return time.time() - HEARTBEAT_FILE.stat().st_mtime > WIDGET_HEARTBEAT_SECONDS
+    except FileNotFoundError:
+        return True
+
+
+def wait_for_widget(seconds: float) -> bool:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        if widget_heartbeat_expired():
+            return False
+        time.sleep(max(0.0, min(1.0, until - time.monotonic())))
+    return not widget_heartbeat_expired()
+
+
+def ensure_bridge() -> int:
+    if DISCONNECT_FILE.exists():
+        return 0
+    touch_widget_heartbeat()
     with open(LOCK_FILE, "a+", encoding="utf-8") as lock:
         os.fchmod(lock.fileno(), 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -520,7 +585,7 @@ def ensure_bridge() -> int:
             pid = int(PID_FILE.read_text().strip())
         except (FileNotFoundError, ValueError):
             pid = 0
-        if pid and process_alive(pid):
+        if pid and process_is_bridge(pid):
             return 0
         with open(os.devnull, "wb") as null:
             process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run"],
@@ -539,23 +604,33 @@ def refresh_mtime() -> float:
 
 
 def request_refresh() -> int:
-    RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(RUNTIME_DIR, 0o700)
+    touch_widget_heartbeat()
     REFRESH_FILE.touch(mode=0o600, exist_ok=True)
     os.chmod(REFRESH_FILE, 0o600)
     return ensure_bridge()
 
 
 def disconnect() -> int:
-    try:
-        pid = int(PID_FILE.read_text().strip())
-        if process_alive(pid):
-            os.kill(pid, 15)
-    except (FileNotFoundError, ValueError, ProcessLookupError):
-        pass
-    clear_secret()
-    with contextlib.suppress(FileNotFoundError): CONFIG_FILE.unlink()
-    with contextlib.suppress(FileNotFoundError): PID_FILE.unlink()
+    RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(RUNTIME_DIR, 0o700)
+    with open(LOCK_FILE, "a+", encoding="utf-8") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        DISCONNECT_FILE.touch(mode=0o600, exist_ok=True)
+        os.chmod(DISCONNECT_FILE, 0o600)
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            if process_is_bridge(pid):
+                os.kill(pid, 15)
+        except (FileNotFoundError, ValueError, ProcessLookupError):
+            pass
+        if not clear_secret():
+            print("The VRM token could not be removed from the system keyring.", file=sys.stderr)
+            return 1
+        with contextlib.suppress(FileNotFoundError): CONFIG_FILE.unlink()
+        with contextlib.suppress(FileNotFoundError): PID_FILE.unlink()
+        with contextlib.suppress(FileNotFoundError): HEARTBEAT_FILE.unlink()
+        with contextlib.suppress(FileNotFoundError): DISCONNECT_FILE.unlink()
     write_status(status_template("unconfigured", "The VRM account was disconnected."))
     return 0
 

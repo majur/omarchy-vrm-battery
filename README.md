@@ -18,7 +18,7 @@ timestamps and a link to the VRM dashboard.
 Clone or publish this repository, then add it with Omarchy:
 
 ```bash
-omarchy plugin add https://github.com/<you>/omarchy-vrm-battery.git --enable
+omarchy plugin add https://github.com/majur/omarchy-vrm-battery.git --enable
 ```
 
 For a local checkout, copy it into the user plugin directory or publish it
@@ -42,6 +42,9 @@ then lists only installations available to that token. The token is stored in
 the system Secret Service keyring through `secret-tool`; it is never written to
 the plugin configuration, command line, logs, or state file. If the keyring is
 locked or unavailable, setup stops instead of falling back to plaintext.
+REST discovery rejects all HTTP redirects, so the token is never forwarded to
+another origin. The MQTT bridge has no listener and stops automatically shortly
+after the widget is disabled or the Omarchy shell exits.
 
 Use a separate monitor-only VRM account if your VRM access model permits it.
 The bridge only subscribes to `N/` notifications and sends documented `R/`
@@ -54,6 +57,22 @@ To remove the local profile and token:
 ```
 
 Also revoke the token in VRM if it is no longer needed.
+If keyring deletion fails, `disconnect` reports the failure and retains the
+local profile so that it can be retried; it never claims that the token was
+removed when it was not.
+
+The runtime requires Omarchy 4, Python 3, Bash, `secret-tool` and a running
+Secret Service keyring (for example GNOME Keyring or KeePassXC). No Python
+packages or root privileges are required.
+
+To remove the plugin safely, first disconnect the account, then disable and
+remove it:
+
+```bash
+scripts/vrm-battery disconnect
+omarchy plugin disable community.vrm-battery
+omarchy plugin remove community.vrm-battery
+```
 
 ## Data source and limitations
 

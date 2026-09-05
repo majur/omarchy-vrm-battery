@@ -128,6 +128,15 @@ BarWidget {
     onTriggered: root.clockNow = Date.now() / 1000
   }
 
+  // The bridge exits if this widget stops refreshing its owner-only heartbeat.
+  // That prevents a network process surviving after the plugin is disabled.
+  Timer {
+    interval: 15000
+    running: true
+    repeat: true
+    onTriggered: if (!ensureBridge.running) ensureBridge.running = true
+  }
+
   Row {
     id: row
     anchors.centerIn: parent

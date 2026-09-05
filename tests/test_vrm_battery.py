@@ -30,6 +30,13 @@ class MeasurementsTest(unittest.TestCase):
         self.measurements.set_phase(3, 340)
         self.assertEqual(self.state["home"]["value"], 690)
 
+    def test_home_uses_oldest_phase_confirmation(self):
+        self.measurements.set_phase_count(2)
+        with patch("vrm_battery.time.time", side_effect=[100, 100, 100 + bridge.FRESH_SECONDS + 1]):
+            self.measurements.set_phase(1, 100)
+            self.measurements.set_phase(2, 200)
+        self.assertEqual(self.state["home"]["validity"], "stale")
+
     def test_old_measurement_becomes_stale(self):
         self.measurements.set_metric("solar", 12)
         self.state["solar"]["confirmedAt"] = time.time() - bridge.FRESH_SECONDS - 1
@@ -55,6 +62,17 @@ class KeyringTest(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["input"], "token-value\n")
         self.assertNotIn("stdin", run.call_args.kwargs)
 
+    @patch("vrm_battery.subprocess.run")
+    def test_disconnect_reports_failed_keyring_deletion(self, run):
+        run.return_value.returncode = 1
+        self.assertFalse(bridge.clear_secret())
+
+
+class HttpSafetyTest(unittest.TestCase):
+    def test_redirect_handler_refuses_every_redirect(self):
+        handler = bridge.NoRedirect()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", None, "https://example.org/"))
+
 
 class TlsTest(unittest.TestCase):
     def test_victron_ca_is_bundled(self):
@@ -70,6 +88,11 @@ class RefreshTest(unittest.TestCase):
                 self.assertEqual(bridge.request_refresh(), 0)
             self.assertTrue(refresh.is_file())
             ensure.assert_called_once()
+
+    def test_missing_widget_heartbeat_stops_the_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(bridge, "HEARTBEAT_FILE", Path(directory) / "missing"):
+                self.assertTrue(bridge.widget_heartbeat_expired())
 
 
 if __name__ == "__main__":
