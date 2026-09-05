@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -58,6 +59,17 @@ class KeyringTest(unittest.TestCase):
 class TlsTest(unittest.TestCase):
     def test_victron_ca_is_bundled(self):
         self.assertTrue(bridge.VICTRON_CA.is_file())
+
+
+class RefreshTest(unittest.TestCase):
+    @patch("vrm_battery.ensure_bridge", return_value=0)
+    def test_manual_refresh_signals_the_running_bridge(self, ensure):
+        with tempfile.TemporaryDirectory() as directory:
+            refresh = Path(directory) / "refresh"
+            with patch.object(bridge, "RUNTIME_DIR", Path(directory)), patch.object(bridge, "REFRESH_FILE", refresh):
+                self.assertEqual(bridge.request_refresh(), 0)
+            self.assertTrue(refresh.is_file())
+            ensure.assert_called_once()
 
 
 if __name__ == "__main__":

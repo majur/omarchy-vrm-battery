@@ -46,6 +46,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 STATE_FILE = STATE_DIR / "status.json"
 PID_FILE = RUNTIME_DIR / "bridge.pid"
 LOCK_FILE = RUNTIME_DIR / "bridge.lock"
+REFRESH_FILE = RUNTIME_DIR / "refresh"
 VICTRON_CA = Path(__file__).resolve().parents[1] / "certs" / "venus-ca.crt"
 
 
@@ -104,14 +105,14 @@ def api_get(path: str, token: str) -> dict[str, Any]:
             parsed = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
-            raise RuntimeError("VRM token nemá prístup alebo bol odvolaný.") from None
+            raise RuntimeError("The VRM token has no access or was revoked.") from None
         if error.code == 429:
-            raise RuntimeError("VRM API je dočasne limitované; skús to o chvíľu.") from None
+            raise RuntimeError("The VRM API is temporarily rate-limited; try again shortly.") from None
         raise RuntimeError(f"VRM API odpovedalo HTTP {error.code}.") from None
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-        raise RuntimeError("VRM API sa nepodarilo bezpečne načítať.") from error
+        raise RuntimeError("The VRM API could not be read securely.") from error
     if not isinstance(parsed, dict) or parsed.get("success") is False:
-        raise RuntimeError("VRM API nepotvrdilo požiadavku.")
+        raise RuntimeError("The VRM API did not confirm the request.")
     return parsed
 
 
@@ -123,9 +124,9 @@ def save_secret(token: str) -> None:
             stderr=subprocess.PIPE, check=False,
         )
     except FileNotFoundError:
-        raise RuntimeError("Secret Service (secret-tool) nie je nainštalovaný.") from None
+        raise RuntimeError("Secret Service (secret-tool) is not installed.") from None
     if completed.returncode != 0:
-        raise RuntimeError("Token sa nepodarilo uložiť do systémového keyringu. Odomkni keyring a skús znova.")
+        raise RuntimeError("The token could not be stored in the system keyring. Unlock it and try again.")
 
 
 def lookup_secret() -> str:
@@ -164,22 +165,22 @@ def configure() -> int:
         print(str(error), file=sys.stderr)
         return 1
     if not isinstance(records, list) or not records:
-        print("Tento VRM účet nemá dostupnú žiadnu inštaláciu.", file=sys.stderr)
+        print("This VRM account has no available installations.", file=sys.stderr)
         return 1
-    print("\nDostupné inštalácie:")
+    print("\nAvailable installations:")
     for index, site in enumerate(records, 1):
-        print(f"  {index}. {site.get('name', 'Bez názvu')} (ID {site.get('idSite', '?')})")
-    answer = input("Vyber číslo [1]: ").strip() or "1"
+        print(f"  {index}. {site.get('name', 'Unnamed')} (ID {site.get('idSite', '?')})")
+    answer = input("Select a number [1]: ").strip() or "1"
     try:
         chosen = records[int(answer) - 1]
         site_id = int(chosen["idSite"])
         portal_id = str(chosen["identifier"]).strip()
         mqtt_host = str(chosen["mqtt_host"]).strip()
     except (ValueError, IndexError, KeyError, TypeError):
-        print("Neplatný výber alebo VRM neposkytlo MQTT údaje.", file=sys.stderr)
+        print("Invalid selection or VRM did not provide MQTT details.", file=sys.stderr)
         return 2
     if not portal_id or not mqtt_host:
-        print("VRM neposkytlo portal ID alebo MQTT broker. Skontroluj prístup k inštalácii.", file=sys.stderr)
+        print("VRM did not provide a portal ID or MQTT broker. Check access to the installation.", file=sys.stderr)
         return 1
     save_secret(token)
     config = {
@@ -191,7 +192,7 @@ def configure() -> int:
     state = status_template("connecting")
     state.update({key: config[key] for key in ("installationName", "siteId", "dashboardUrl")})
     write_status(state)
-    print("Hotovo. Widget sa pripojí počas najbližšieho načítania lišty.")
+    print("Done. The widget will connect when the bar next loads.")
     return 0
 
 
@@ -228,10 +229,10 @@ class MqttClient:
 
     def connect(self) -> None:
         if not self.host or not self.host.endswith(".victronenergy.com"):
-            raise RuntimeError("VRM vrátil neočakávaný MQTT broker.")
+            raise RuntimeError("VRM returned an unexpected MQTT broker.")
         context = ssl.create_default_context()
         if not VICTRON_CA.is_file():
-            raise RuntimeError("Chýba oficiálny Victron CA certifikát pre MQTT.")
+            raise RuntimeError("The official Victron CA certificate for MQTT is missing.")
         # VRM MQTT uses the Victron CCGX CA. Keep the system trust store and
         # add this upstream CA; certificate and hostname verification remain on.
         context.load_verify_locations(cafile=str(VICTRON_CA))
@@ -250,42 +251,42 @@ class MqttClient:
         self.send(0x10, body)
         kind, reply = self.recv(timeout=15)
         if kind != 2:
-            raise RuntimeError("MQTT broker neodpovedal na prihlásenie.")
+            raise RuntimeError("The MQTT broker did not respond to login.")
         # CONNACK: acknowledge flags, return code 0
         if len(reply) < 2 or reply[1] != 0:
-            raise RuntimeError("VRM MQTT odmietol prístupový token.")
+            raise RuntimeError("VRM MQTT rejected the access token.")
 
     def send(self, header: int, payload: bytes) -> None:
         if not self.socket:
-            raise RuntimeError("MQTT spojenie nie je otvorené.")
+            raise RuntimeError("The MQTT connection is not open.")
         self.socket.sendall(mqtt_packet(header, payload))
 
     def recv(self, timeout: float = 1.0) -> tuple[int, bytes]:
         if not self.socket:
-            raise RuntimeError("MQTT spojenie nie je otvorené.")
+            raise RuntimeError("The MQTT connection is not open.")
         self.socket.settimeout(timeout)
         try:
             first = self.socket.recv(1)
         except socket.timeout:
             return 0, b""
         if not first:
-            raise RuntimeError("MQTT spojenie bolo ukončené.")
+            raise RuntimeError("The MQTT connection was closed.")
         multiplier, size = 1, 0
         while True:
             byte = self.socket.recv(1)
             if not byte:
-                raise RuntimeError("MQTT spojenie bolo ukončené.")
+                raise RuntimeError("The MQTT connection was closed.")
             size += (byte[0] & 127) * multiplier
             if not byte[0] & 128:
                 break
             multiplier *= 128
             if multiplier > 128 ** 3:
-                raise RuntimeError("Neplatná MQTT správa.")
+                raise RuntimeError("Invalid MQTT message.")
         data = bytearray()
         while len(data) < size:
             chunk = self.socket.recv(size - len(data))
             if not chunk:
-                raise RuntimeError("MQTT spojenie bolo ukončené.")
+                raise RuntimeError("The MQTT connection was closed.")
             data.extend(chunk)
         return first[0] >> 4, bytes(data)
 
@@ -405,11 +406,11 @@ def run_bridge() -> int:
     config = read_json(CONFIG_FILE)
     required = ("email", "siteId", "portalId", "mqttHost", "dashboardUrl")
     if not all(config.get(key) for key in required):
-        write_status(status_template("unconfigured", "VRM účet ešte nie je pripojený."))
+        write_status(status_template("unconfigured", "A VRM account has not been connected yet."))
         return 0
     token = lookup_secret()
     if not token:
-        write_status(configure_state(config, "auth-required", "VRM token nie je dostupný v systémovom keyringu."))
+        write_status(configure_state(config, "auth-required", "The VRM token is unavailable in the system keyring."))
         return 0
     state = configure_state(config, "connecting")
     measurements = Measurements(state)
@@ -443,6 +444,7 @@ def run_bridge() -> int:
             for topic in read_topics:
                 client.publish(topic)
             last_refresh = time.monotonic()
+            last_manual_refresh = refresh_mtime()
             next_retry = 1.0
             while True:
                 kind, packet = client.recv(1.0)
@@ -462,6 +464,11 @@ def run_bridge() -> int:
                             state["snapshotConfirmedAt"] = time.time()
                             changed = True
                 now = time.monotonic()
+                manual_refresh = refresh_mtime()
+                if manual_refresh > last_manual_refresh:
+                    for topic in read_topics:
+                        client.publish(topic)
+                    last_manual_refresh = manual_refresh
                 if now - last_refresh >= KEEPALIVE_SECONDS:
                     # A concrete R/ request confirms values that have not changed.
                     # Only documented read topics are ever constructed; no W/ topic exists.
@@ -477,7 +484,7 @@ def run_bridge() -> int:
             return 0
         except RuntimeError as error:
             message = str(error)
-            state["connection"] = "auth-required" if "token" in message.lower() or "prístup" in message.lower() else "offline"
+            state["connection"] = "auth-required" if "token" in message.lower() or "access" in message.lower() else "offline"
             state["error"] = message
             if measurements.expire():
                 pass
@@ -486,7 +493,7 @@ def run_bridge() -> int:
             next_retry = min(next_retry * 2, 60)
         except (OSError, ssl.SSLError) as error:
             state["connection"] = "offline"
-            state["error"] = "MQTT spojenie sa prerušilo."
+            state["error"] = "The MQTT connection was interrupted."
             write_status(state)
             time.sleep(next_retry + secrets.randbelow(300) / 1000)
             next_retry = min(next_retry * 2, 60)
@@ -524,6 +531,21 @@ def ensure_bridge() -> int:
     return 0
 
 
+def refresh_mtime() -> float:
+    try:
+        return REFRESH_FILE.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def request_refresh() -> int:
+    RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(RUNTIME_DIR, 0o700)
+    REFRESH_FILE.touch(mode=0o600, exist_ok=True)
+    os.chmod(REFRESH_FILE, 0o600)
+    return ensure_bridge()
+
+
 def disconnect() -> int:
     try:
         pid = int(PID_FILE.read_text().strip())
@@ -534,16 +556,17 @@ def disconnect() -> int:
     clear_secret()
     with contextlib.suppress(FileNotFoundError): CONFIG_FILE.unlink()
     with contextlib.suppress(FileNotFoundError): PID_FILE.unlink()
-    write_status(status_template("unconfigured", "VRM účet bol odpojený."))
+    write_status(status_template("unconfigured", "The VRM account was disconnected."))
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Omarchy VRM Battery bridge")
-    parser.add_argument("command", choices=("configure", "ensure", "run", "disconnect", "status"))
+    parser.add_argument("command", choices=("configure", "ensure", "refresh", "run", "disconnect", "status"))
     args = parser.parse_args()
     if args.command == "configure": return configure()
     if args.command == "ensure": return ensure_bridge()
+    if args.command == "refresh": return request_refresh()
     if args.command == "run": return run_bridge()
     if args.command == "disconnect": return disconnect()
     print(json.dumps(read_json(STATE_FILE) or status_template()))

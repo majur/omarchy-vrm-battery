@@ -68,13 +68,13 @@ BarWidget {
     var value = metricValue(metric)
     var unit = metric && metric.unit === "%" ? percent(value) : watts(value)
     var age = ageSeconds(metric)
-    var suffix = age === null ? "nedostupné" : (metric && metric.validity === "stale" ? "zastarané, potvrdené pred " : "potvrdené pred ") + ageLabel(age)
+    var suffix = age === null ? "unavailable" : (metric && metric.validity === "stale" ? "stale, confirmed " : "confirmed ") + ageLabel(age) + " ago"
     return label + ": " + unit + " — " + suffix
   }
 
   function tooltip() {
-    if (connection === "unconfigured") return "VRM nie je pripojené. Pozri README pre bezpečný setup."
-    var lines = [metricDetail("Batéria", soc), metricDetail("Solár", solar), metricDetail("Dom", home)]
+    if (connection === "unconfigured") return "VRM is not connected. See the README for secure setup."
+    var lines = [metricDetail("Battery", soc), metricDetail("Solar", solar), metricDetail("Home", home)]
     if (status.error) lines.push(String(status.error))
     return lines.join("\n")
   }
@@ -96,7 +96,7 @@ BarWidget {
         var parsed = JSON.parse(text())
         root.status = parsed && typeof parsed === "object" ? parsed : ({})
       } catch (error) {
-        root.status = ({ connection: "error", error: "Neplatný stav VRM bridge." })
+        root.status = ({ connection: "error", error: "Invalid VRM bridge state." })
       }
     }
     onLoadFailed: root.status = ({ connection: "unconfigured" })
@@ -105,6 +105,12 @@ BarWidget {
   Process {
     id: ensureBridge
     command: ["bash", root.bridgeScript, "ensure"]
+  }
+
+  Process {
+    id: refreshProcess
+    command: ["bash", root.bridgeScript, "refresh"]
+    onExited: statusFile.reload()
   }
 
   Timer {
@@ -179,19 +185,35 @@ BarWidget {
       anchors.fill: parent
       spacing: Style.space(9)
 
-      Text {
+      Row {
         width: parent.width
-        text: root.status.installationName || "Victron VRM"
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.subtitle
-        font.bold: true
-        elide: Text.ElideRight
-        textFormat: Text.PlainText
+        spacing: Style.space(6)
+
+        Text {
+          width: parent.width - refreshButton.implicitWidth - parent.spacing
+          text: root.status.installationName || "Victron VRM"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+        }
+
+        Button {
+          id: refreshButton
+          visible: root.configured
+          iconText: "󰑐"
+          tooltipText: "Refresh data"
+          foreground: root.foreground
+          horizontalPadding: Style.space(5)
+          verticalPadding: Style.space(3)
+          onClicked: if (!refreshProcess.running) refreshProcess.running = true
+        }
       }
       Text {
         width: parent.width
-        text: root.metricDetail("Batéria", root.soc)
+        text: root.metricDetail("Battery", root.soc)
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
@@ -200,7 +222,7 @@ BarWidget {
       }
       Text {
         width: parent.width
-        text: root.metricDetail("Solárne panely", root.solar)
+        text: root.metricDetail("Solar panels", root.solar)
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
@@ -209,7 +231,7 @@ BarWidget {
       }
       Text {
         width: parent.width
-        text: root.metricDetail("Sledované záťaže", root.home)
+        text: root.metricDetail("Monitored loads", root.home)
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
@@ -219,7 +241,7 @@ BarWidget {
       Text {
         width: parent.width
         visible: root.connection !== "live" || root.status.error
-        text: root.status.error || (root.connection === "unconfigured" ? "Spusti scripts/vrm-battery configure v priečinku pluginu." : root.connection)
+        text: root.status.error || (root.connection === "unconfigured" ? "Run scripts/vrm-battery configure in the plugin folder." : root.connection)
         color: root.statusColor
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -228,7 +250,7 @@ BarWidget {
       }
       Button {
         visible: root.dashboardUrl !== ""
-        text: "Otvoriť VRM dashboard"
+        text: "Open VRM dashboard"
         foreground: root.foreground
         onClicked: Quickshell.execDetached(["xdg-open", root.dashboardUrl])
       }
