@@ -118,7 +118,7 @@ def save_secret(token: str) -> None:
     try:
         completed = subprocess.run(
             ["secret-tool", "store", "--label=Omarchy VRM Battery", "service", SERVICE, "profile", PROFILE],
-            input=token + "\n", text=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            input=token + "\n", text=True, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, check=False,
         )
     except FileNotFoundError:

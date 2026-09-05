@@ -2,6 +2,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 import vrm_battery as bridge
@@ -43,6 +44,15 @@ class MqttParsingTest(unittest.TestCase):
         payload = bridge.utf8("N/portal/system/0/Dc/Pv/Power") + b'{"value": 42}'
         self.assertEqual(bridge.parse_publish(payload)[0], "N/portal/system/0/Dc/Pv/Power")
         self.assertIsNone(bridge.parse_publish(b"\x00"))
+
+
+class KeyringTest(unittest.TestCase):
+    @patch("vrm_battery.subprocess.run")
+    def test_token_is_passed_via_input_without_a_conflicting_stdin(self, run):
+        run.return_value.returncode = 0
+        bridge.save_secret("token-value")
+        self.assertEqual(run.call_args.kwargs["input"], "token-value\n")
+        self.assertNotIn("stdin", run.call_args.kwargs)
 
 
 if __name__ == "__main__":
