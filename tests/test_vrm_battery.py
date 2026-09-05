@@ -55,5 +55,10 @@ class KeyringTest(unittest.TestCase):
         self.assertNotIn("stdin", run.call_args.kwargs)
 
 
+class TlsTest(unittest.TestCase):
+    def test_victron_ca_is_bundled(self):
+        self.assertTrue(bridge.VICTRON_CA.is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

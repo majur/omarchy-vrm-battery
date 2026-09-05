@@ -61,7 +61,9 @@ The bridge uses the official VRM REST API for account and installation discovery
 and the VRM MQTT broker over verified TLS for live updates. The bundled
 `certs/venus-ca.crt` is the Victron CCGX CA published in the official
 `victronenergy/dbus-flashmq` repository; it supplements, rather than replaces,
-the system trust store. It listens to the
+the system trust store. Its legacy Basic Constraints encoding requires disabling
+only OpenSSL's extra strict-extension check; certificate-chain and hostname
+verification remain enabled. It listens to the
 system service's aggregated battery SoC, DC PV power, and AC consumption paths.
 The Solar value is the system-calculated PV aggregate. The Home value is the
 AC load monitored by the GX system; it is not necessarily the entire physical

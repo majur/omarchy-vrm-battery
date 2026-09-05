@@ -235,6 +235,12 @@ class MqttClient:
         # VRM MQTT uses the Victron CCGX CA. Keep the system trust store and
         # add this upstream CA; certificate and hostname verification remain on.
         context.load_verify_locations(cafile=str(VICTRON_CA))
+        # The official legacy CCGX CA predates OpenSSL's strict requirement for
+        # a *critical* Basic Constraints extension. Disabling only this extra
+        # strict check preserves certificate-chain and hostname verification.
+        strict_flag = getattr(ssl, "VERIFY_X509_STRICT", 0)
+        if strict_flag:
+            context.verify_flags &= ~strict_flag
         raw = socket.create_connection((self.host, self.port), timeout=15)
         self.socket = context.wrap_socket(raw, server_hostname=self.host)
         client_id = f"omarchy-vrm-{secrets.token_hex(6)}"
