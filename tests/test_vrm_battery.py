@@ -53,6 +53,22 @@ class MqttParsingTest(unittest.TestCase):
         self.assertEqual(bridge.parse_publish(payload)[0], "N/portal/system/0/Dc/Pv/Power")
         self.assertIsNone(bridge.parse_publish(b"\x00"))
 
+    def test_rejects_an_oversized_packet_before_reading_its_payload(self):
+        class Socket:
+            def __init__(self):
+                self.parts = iter((b"\x30", b"\x80", b"\x80", b"\x80", b"\x01"))
+
+            def settimeout(self, timeout):
+                pass
+
+            def recv(self, size):
+                return next(self.parts)
+
+        client = bridge.MqttClient("mqtt.victronenergy.com", "", "")
+        client.socket = Socket()
+        with self.assertRaisesRegex(RuntimeError, "safe size limit"):
+            client.recv()
+
 
 class KeyringTest(unittest.TestCase):
     @patch("vrm_battery.subprocess.run")
@@ -84,9 +100,13 @@ class RefreshTest(unittest.TestCase):
     def test_manual_refresh_signals_the_running_bridge(self, ensure):
         with tempfile.TemporaryDirectory() as directory:
             refresh = Path(directory) / "refresh"
-            with patch.object(bridge, "RUNTIME_DIR", Path(directory)), patch.object(bridge, "REFRESH_FILE", refresh):
+            heartbeat = Path(directory) / "widget.heartbeat"
+            with (patch.object(bridge, "RUNTIME_DIR", Path(directory)),
+                  patch.object(bridge, "REFRESH_FILE", refresh),
+                  patch.object(bridge, "HEARTBEAT_FILE", heartbeat)):
                 self.assertEqual(bridge.request_refresh(), 0)
             self.assertTrue(refresh.is_file())
+            self.assertTrue(heartbeat.is_file())
             ensure.assert_called_once()
 
     def test_missing_widget_heartbeat_stops_the_bridge(self):

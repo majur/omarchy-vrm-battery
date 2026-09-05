@@ -34,6 +34,9 @@ PROFILE = "default"
 FRESH_SECONDS = 90
 KEEPALIVE_SECONDS = 30
 WIDGET_HEARTBEAT_SECONDS = 45
+# The widget consumes only a few small JSON values.  Reject unexpectedly large
+# MQTT packets before allocating their payload buffer.
+MAX_MQTT_PACKET_BYTES = 1024 * 1024
 
 
 def xdg(name: str, default: str) -> Path:
@@ -296,6 +299,8 @@ class MqttClient:
             if not byte:
                 raise RuntimeError("The MQTT connection was closed.")
             size += (byte[0] & 127) * multiplier
+            if size > MAX_MQTT_PACKET_BYTES:
+                raise RuntimeError("MQTT message exceeds the safe size limit.")
             if not byte[0] & 128:
                 break
             multiplier *= 128
