@@ -421,6 +421,14 @@ def run_bridge() -> int:
         f"{base}/Ac/Consumption/L1/Power", f"{base}/Ac/Consumption/L2/Power", f"{base}/Ac/Consumption/L3/Power",
         f"N/{portal}/full_publish_completed",
     ]
+    read_topics = [
+        f"R/{portal}/system/0/Dc/Battery/Soc",
+        f"R/{portal}/system/0/Dc/Pv/Power",
+        f"R/{portal}/system/0/Ac/Consumption/NumberOfPhases",
+        f"R/{portal}/system/0/Ac/Consumption/L1/Power",
+        f"R/{portal}/system/0/Ac/Consumption/L2/Power",
+        f"R/{portal}/system/0/Ac/Consumption/L3/Power",
+    ]
     next_retry = 1.0
     while True:
         client: MqttClient | None = None
@@ -432,7 +440,9 @@ def run_bridge() -> int:
             state["error"] = ""
             client.subscribe(topics)
             client.publish(f"R/{portal}/keepalive")
-            last_keepalive = time.monotonic()
+            for topic in read_topics:
+                client.publish(topic)
+            last_refresh = time.monotonic()
             next_retry = 1.0
             while True:
                 kind, packet = client.recv(1.0)
@@ -452,11 +462,12 @@ def run_bridge() -> int:
                             state["snapshotConfirmedAt"] = time.time()
                             changed = True
                 now = time.monotonic()
-                if now - last_keepalive >= KEEPALIVE_SECONDS:
-                    # Full republish validates unchanged values as well. We only publish
-                    # the documented read/keepalive topic; no W/ topic is ever constructed.
-                    client.publish(f"R/{portal}/keepalive")
-                    last_keepalive = now
+                if now - last_refresh >= KEEPALIVE_SECONDS:
+                    # A concrete R/ request confirms values that have not changed.
+                    # Only documented read topics are ever constructed; no W/ topic exists.
+                    for topic in read_topics:
+                        client.publish(topic)
+                    last_refresh = now
                 if now - client.last_ping >= 20:
                     client.ping()
                 if measurements.expire(): changed = True

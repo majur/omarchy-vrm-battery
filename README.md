@@ -69,8 +69,9 @@ The Solar value is the system-calculated PV aggregate. The Home value is the
 AC load monitored by the GX system; it is not necessarily the entire physical
 home if the installation lacks meters or has unmonitored DC loads.
 
-The backend sends an initial and then 30-second full keepalive snapshot so
-unchanged readings are re-confirmed. Values become stale after 90 seconds. A
+The backend sends an initial keepalive and then 30-second read requests for each
+displayed system metric, so unchanged readings are re-confirmed. Values become
+stale after 90 seconds. A
 cloud connection cannot guarantee the time at which a physical device measured
 the value, so the UI says “confirmed” rather than claiming exact sensor age.
 
